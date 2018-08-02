@@ -56,7 +56,7 @@ function createWindow () {
     console.log('Configured as', JSON.stringify(conf, null, 4))
   }
   catch (e) {
-    console.log('Cant read from configuration file from ' + confFilePath + '. Not a problem (yet).', e)
+    console.log('Cant read from configuration file from ' + confFilePath + '. Not a problem (yet).')
   }
 
   // Create the browser window.
@@ -72,12 +72,12 @@ function createWindow () {
   mainWindow = new BrowserWindow({ x: display.bounds.x, y: display.bounds.y, width: 900, height: 600 })
   mainWindow.setMenu(null)
   if (devMode) {
-    mainWindow.setFullScreen(true)
+    mainWindow.setFullScreen(false)
     mainWindow.webContents.openDevTools()
     process.env.DEBUG = '*'
   } else {
     mainWindow.setFullScreen(true)
-    // mainWindow.setKiosk(true)
+    mainWindow.setKiosk(true)
   }
   if (skipTaskbar) {
     mainWindow.setSkipTaskbar(skipTaskbar)
@@ -121,6 +121,3 @@ app.on('activate', function () {
     createWindow()
   }
 })
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.

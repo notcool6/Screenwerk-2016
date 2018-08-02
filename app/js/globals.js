@@ -1,13 +1,32 @@
 const path = require('path')
+const util = require('util')
 const fs = require('fs')
 const request = require('request')
 const YAML = require('yamljs')
+
+
+Object.defineProperty(global, '__stack', {
+  get: function() {
+    var orig = Error.prepareStackTrace
+    Error.prepareStackTrace = function(_, stack) {
+        return stack
+    }
+    var err = new Error
+    Error.captureStackTrace(err, arguments.callee)
+    var stack = err.stack
+    Error.prepareStackTrace = orig
+    return stack
+  }
+})
+
 
 // Initialise globals, sanity check filesystem
 module.exports = (callback) => {
   let _G = {} // Globals. Paths, screenEid, etc.
 
   _G.packageJson = require(path.resolve(__dirname, '..', '..', 'package.json'))
+  let gitbranch = fs.readFileSync(path.resolve(__dirname, '..', '..', '.git', 'HEAD'), 'utf8').split(': ')[1].split('/')
+  _G.gitBranch = gitbranch[gitbranch.length - 1].trim()
 
   _G.codes = {
     CONFIGURATION_DOWNLOAD_IN_PROGRESS: 'CONFIGURATION_DOWNLOAD_IN_PROGRESS',
@@ -23,43 +42,41 @@ module.exports = (callback) => {
     MEDIA_TYPE_VIDEO: 'Video',
     MEDIA_TYPE_AUDIO: 'Audio'
   }
-  _G.HOME_PATH = path.resolve(__dirname, '..', '..', 'local')
-  if (!fs.existsSync(_G.HOME_PATH)) {
-    fs.mkdirSync(_G.HOME_PATH)
+  
+  const enforceDir = function(dirname, cleanup=false) {
+    if (!fs.existsSync(dirname)) {
+      fs.mkdirSync(dirname)
+    } else if (cleanup) {
+      fs.readdirSync(dirname).forEach((downloadFilename) => {
+        if (downloadFilename.split('.').pop() !== 'download') { return }
+        let downloadFilePath = path.resolve(dirname, downloadFilename)
+        console.log('Unlink ' + downloadFilePath)
+        let result = fs.unlinkSync(downloadFilePath)
+        if (result instanceof Error) {
+          console.log("Can't unlink " + downloadFilePath, result)
+        }
+      })
+    }
   }
+  
+  _G.HOME_PATH = path.resolve(__dirname, '..', '..', 'local')
+  enforceDir(_G.HOME_PATH)
 
   _G.META_DIR = path.resolve(_G.HOME_PATH)
-  // _G.META_DIR = path.resolve(_G.HOME_PATH, 'sw-meta')
-  if (!fs.existsSync(_G.META_DIR)) {
-    fs.mkdirSync(_G.META_DIR)
-  }
-  fs.readdirSync(_G.META_DIR).forEach((downloadFilename) => {
-    if (downloadFilename.split('.').pop() !== 'download') { return }
-    let downloadFilePath = path.resolve(_G.META_DIR, downloadFilename)
-    console.log('Unlink ' + downloadFilePath)
-    let result = fs.unlinkSync(downloadFilePath)
-    if (result instanceof Error) {
-      console.log("Can't unlink " + downloadFilePath, result)
-    }
-  })
+  enforceDir(_G.META_DIR, cleanup=true)
 
   _G.MEDIA_DIR = path.resolve(_G.HOME_PATH, 'sw-media')
-  if (!fs.existsSync(_G.MEDIA_DIR)) {
-    fs.mkdirSync(_G.MEDIA_DIR)
-  }
-  fs.readdirSync(_G.MEDIA_DIR).forEach((downloadFilename) => {
-    if (downloadFilename.split('.').pop() !== 'download') { return }
-    let downloadFilePath = path.resolve(_G.MEDIA_DIR, downloadFilename)
-    console.log('Unlink ' + downloadFilePath)
-    let result = fs.unlinkSync(downloadFilePath)
-    if (result instanceof Error) {
-      console.log("Can't unlink " + downloadFilePath, result)
-    }
-  })
+  enforceDir(_G.MEDIA_DIR, cleanup=true)
 
-  _G.playbackLog = fs.createWriteStream(path.resolve(_G.HOME_PATH, 'playback.log'))
-  _G.playbackLog.setDefaultEncoding('utf8')
-  _G.playbackLog.write(new Date().toJSON() + ' ' + _G.packageJson.productName + ' version ' + _G.packageJson.version + '\n')
+  _G.checkInternet = function(cb) {
+    require('dns').lookup('google.com',function(err) {
+      if (err && err.code == "ENOTFOUND") {
+        cb(false)
+      } else {
+        cb(true)
+      }
+    })
+  }
 
   function closeWithMessage (message) {
     window.alert(message)
@@ -125,11 +142,44 @@ module.exports = (callback) => {
     _G[ix] = credentials[ix]
   }
   console.log(credentials)
+
+  let logFileName = _G.SCREEN_EID + '.playback.log'
+  let prevLogFileName = _G.SCREEN_EID + '.playback(0).log'
+  try {
+    fs.renameSync(path.resolve(_G.HOME_PATH, logFileName), path.resolve(_G.HOME_PATH, prevLogFileName))
+  } catch (e) {
+    null
+  }
+  _G.playbackLog = fs.createWriteStream(path.resolve(_G.HOME_PATH, logFileName))
+  _G.playbackLog.setDefaultEncoding('utf8')
+  _G.playbackLog.log = function(text, id) {
+    let when = new Date().toJSON().slice(11).replace(/[TZ]/g, ' ')
+    let stack = __stack[1].toString()
+    let method = stack.split(' ')[0].split('.').pop()
+    let where = (
+      (
+        (stack.split('/').pop().split(':')[0])
+        .split('.')[0]
+        + ':' + stack.split('/').pop().split(':')[1]
+        + new Array(15).join(' ')
+      ).slice(0,15)
+      + ' ' + method
+      + new Array(35).join(' ')
+    ).slice(0,35)
+
+    if (typeof text === 'object') {
+      text = util.inspect(text)
+    }
+    _G.playbackLog.write(when + where + (id ? ' [' + id + ']' : '') + ' ' + text + '\n')
+  }
+
+  _G.playbackLog.log(_G.packageJson.productName + ' ' + _G.packageJson.version + '@' + _G.gitBranch)
+
   // _G.SCREEN_EID = credentials.SCREEN_EID
   // _G.SCREEN_KEY = credentials.SCREEN_KEY
   // _G.DISPLAY_NUM = credentials.DISPLAY_NUM
   // _G.DEV_MODE = credentials.DEV_MODE
-  _G.SCREENWERK_API = 'https://swpublisher.entu.eu/configuration/'
+  _G.SCREENWERK_API = 'https://swpublisher.entu.eu/screen/'
 
   _G.setScreenEid = (_G, eid) => {
     let credentials = readCredentials(_G)
@@ -152,11 +202,11 @@ module.exports = (callback) => {
     screenEidInput.addEventListener('keyup', (e) => {
       if (/^\d+$/.test(screenEidInput.value)) {
         screenEidResult.innerHTML = screenEidInput.value
-        if (screenEidInput.value.length >= 2) {
-          screenEidResult.innerHTML = 'Looking up ' + screenEidInput.value + ' ...'
+        if (e.keyCode === 13) {
+          screenEidResult.innerHTML = 'Looking up ' + screenEidInput.value + '.json' + ' ...'
 
           let responseData = ''
-          request(_G.SCREENWERK_API + screenEidInput.value)
+          request(_G.SCREENWERK_API + screenEidInput.value + '.json')
           .on('response', (res) => {
             if (res.statusCode !== 200) {
               screenEidResult.innerHTML = JSON.stringify({not200:res}, null, 4)
